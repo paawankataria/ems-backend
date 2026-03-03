@@ -1,0 +1,9 @@
+.venv/
+
+# Other common Python/Django exclusions
+__pycache__/
+*.py[cod]
+*$py.class
+.idea/
+.DS_Store
+db.sqlite3
