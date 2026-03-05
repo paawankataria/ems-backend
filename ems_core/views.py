@@ -1,4 +1,5 @@
 import base64
+from django.utils import timezone
 from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -9,13 +10,14 @@ from django.core.exceptions import ValidationError
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.shortcuts import get_object_or_404
-from .models import Employee, Department
+from .models import Attendance, Employee, Department
 from .serializers import (
     DepartmentSerializer,
     UserSerializer,
     EmployeeSerializer,
     EmployeeListSerializer,
-    UserUpdateSerializer
+    UserUpdateSerializer,
+    AttendanceSerializer
 )
 from .permissions import IsAdminRole
 
@@ -57,14 +59,17 @@ class AuthViewSet(viewsets.ViewSet):
         return Response({'token': str(token),}, status=status.HTTP_200_OK)
     
 # Departments
-class DepartmentViewSet(viewsets.ViewSet):
+class DepartmentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
+                       mixins.DestroyModelMixin, viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated, IsAdminRole]
+    serializer_class = DepartmentSerializer
+    queryset = Department.objects.all().order_by('name')
 
     # GET /api/departments/
-    def list(self, request):
-        departments = Department.objects.all().order_by('name')
-        serializer  = DepartmentSerializer(departments, many=True)
-        return Response(serializer.data)
+    # def list(self, request):
+    #     departments = Department.objects.all().order_by('name')
+    #     serializer  = DepartmentSerializer(departments, many=True)
+    #     return Response(serializer.data)
 
     # POST /api/departments/
     def create(self, request):
@@ -79,8 +84,8 @@ class DepartmentViewSet(viewsets.ViewSet):
         return Response({'message': 'Department created successfully.', 'department': serializer.data}, status=status.HTTP_201_CREATED)
 
     # GET /api/departments/{id}/
-    def retrieve(self, request, pk=None):
-        return Response(DepartmentSerializer(get_object_or_404(Department, pk=pk)).data)
+    # def retrieve(self, request, pk=None):
+    #     return Response(DepartmentSerializer(get_object_or_404(Department, pk=pk)).data)
 
     # PUT /api/departments/{id}
     def update(self, request, pk=None):
@@ -97,13 +102,12 @@ class DepartmentViewSet(viewsets.ViewSet):
         }, status=status.HTTP_200_OK)
     
     # DELETE /api/departments/{id}/
-    def destroy(self, request, pk=None):
-        get_object_or_404(Department, pk=pk).delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+    # def destroy(self, request, pk=None):
+    #     get_object_or_404(Department, pk=pk).delete()
+    #     return Response(status=status.HTTP_204_NO_CONTENT)
     
 # Employees
-class EmployeesViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin,
-                       mixins.DestroyModelMixin, viewsets.GenericViewSet):
+class EmployeesViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated, IsAdminRole]
     serializer_class = EmployeeListSerializer
 
@@ -124,6 +128,12 @@ class EmployeesViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.
         user_data = user_serializer.validated_data
         employee_data = employee_serializer.validated_data
 
+        try:
+            user_data['password'] = base64.b64decode(user_data['password']).decode('utf-8')
+            user_data['confirm_password'] = base64.b64decode(user_data['confirm_password']).decode('utf-8')
+        except Exception:
+            return Response({'error': 'Invalid encoding'}, status=status.HTTP_400_BAD_REQUEST)
+        
         if user_data['password'] != user_data.pop('confirm_password'):
             return Response({'error': 'Passwords do not match.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
@@ -187,5 +197,48 @@ class EmployeesViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.
     # DELETE /api/employees/{id}/
     def destroy(self, request, *args, **kwargs):
         employee = self.get_object()
-        employee.user.delete()
+        user = employee.user
+        user.delete()  # This will cascade delete the employee
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+class AttendanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = AttendanceSerializer
+    
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == 'admin':
+            return Attendance.objects.all()
+        return Attendance.objects.filter(employee=user.employee)
+    
+    @action(detail=False, methods=['POST'])
+    def clock_in(self, request):
+        employee = request.user.employee
+        today = timezone.localdate()
+        
+        if Attendance.objects.filter(employee=employee, date=today, clock_in__isnull=False).exists():
+            return Response({'detail': 'Already clocked in today'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        attendance = Attendance.objects.create(employee=employee, date=today, clock_in=timezone.now())
+        serializer = self.get_serializer(attendance)
+        return Response({'detail': 'Clocked in successfully', 'attendance': serializer.data}, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=['POST'])
+    def clock_out(self, request):
+        employee = request.user.employee
+        today = timezone.localdate()
+        
+        try:
+            attendance = Attendance.objects.get(employee=employee, date=today)
+        except Attendance.DoesNotExist:
+            return Response({"message": 'You have not clocked in'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if attendance.clock_out:
+            return Response({'message': 'Already clocked out today'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        attendance.clock_out = timezone.now()
+        attendance.work_hours = attendance.clock_out - attendance.clock_in
+        attendance.status = 'present'
+        attendance.save()
+        serializer = self.get_serializer(attendance)
+        return Response({'message': 'Clocked out successfully', 'attendance': serializer.data}, status=status.HTTP_200_OK)

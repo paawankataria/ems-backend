@@ -1,8 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from django.contrib.auth.password_validation import validate_password
-from django.db import transaction
-from .models import Employee, Department
+from .models import Employee, Department, Attendance
 
 User = get_user_model()
 
@@ -42,3 +40,10 @@ class EmployeeListSerializer(serializers.ModelSerializer):
         model = Employee
         fields = '__all__'
 
+class AttendanceSerializer(serializers.ModelSerializer):
+    employee_name = serializers.CharField(source='employee.user.get_full_name', read_only=True)
+    class Meta:
+        model = Attendance
+        fields = '__all__'
+        read_only_fields = ['status', 'work_hours', 'created_at']
+        extra_kwargs = {'employee': {'write_only': True}}

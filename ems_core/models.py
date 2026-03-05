@@ -1,6 +1,7 @@
 from django.contrib.auth.models import AbstractUser
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 class User(AbstractUser):
     ROLE_CHOICES = [
@@ -43,3 +44,32 @@ class Employee(models.Model):
 
     def __str__(self):
         return f"{self.user.email} ({self.user.role})"
+
+class Attendance(models.Model):
+    STATUS_CHOICES = [
+        ('present', 'Present'),
+        ('absent', 'Absent'),
+        ('half_day', 'Half Day'),
+        ('work_from_home', 'Work From Home'),
+    ]
+
+    employee = models.ForeignKey(
+        'Employee',
+        on_delete=models.CASCADE,
+        related_name='attendance'
+    )
+    date = models.DateField(default=timezone.now)
+    clock_in = models.DateTimeField(blank=True, null=True)
+    clock_out = models.DateTimeField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='present')
+    work_hours = models.DurationField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['employee', 'date'], name='unique_employee_date')
+        ]
+        ordering = ['-date']
+
+    def __str__(self):
+        return f"{self.employee} ({self.date}) - {self.status}"
