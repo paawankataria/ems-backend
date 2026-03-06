@@ -47,3 +47,4 @@ class AttendanceSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['status', 'work_hours', 'created_at']
         extra_kwargs = {'employee': {'write_only': True}}
+

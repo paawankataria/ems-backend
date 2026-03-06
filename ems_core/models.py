@@ -49,6 +49,7 @@ class Attendance(models.Model):
     STATUS_CHOICES = [
         ('present', 'Present'),
         ('absent', 'Absent'),
+        ('on_leave', 'On Leave'),
         ('half_day', 'Half Day'),
         ('work_from_home', 'Work From Home'),
     ]

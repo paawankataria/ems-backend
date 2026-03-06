@@ -1,4 +1,5 @@
 .venv/
+.vs/
 
 # Other common Python/Django exclusions
 __pycache__/

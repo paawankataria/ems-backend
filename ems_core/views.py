@@ -112,7 +112,7 @@ class EmployeesViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
     serializer_class = EmployeeListSerializer
 
     def get_queryset(self):
-        return Employee.objects.select_related('user', 'department').exclude(user__role='admin').order_by('-user__created_at')
+        return Employee.objects.select_related('user', 'department').order_by('-user__created_at')
     
     # GET /api/employees/list/
     
@@ -201,7 +201,7 @@ class EmployeesViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
         user.delete()  # This will cascade delete the employee
         return Response(status=status.HTTP_204_NO_CONTENT)
 
-class AttendanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+class AttendanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = AttendanceSerializer
     
@@ -238,7 +238,23 @@ class AttendanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
         
         attendance.clock_out = timezone.now()
         attendance.work_hours = attendance.clock_out - attendance.clock_in
-        attendance.status = 'present'
+        status_value = request.data.get('status', 'present')
+        if status_value not in ['present', 'half_day', 'work_from_home']:
+            return Response({'error': 'Invalid status.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        attendance.status = status_value
         attendance.save()
         serializer = self.get_serializer(attendance)
         return Response({'message': 'Clocked out successfully', 'attendance': serializer.data}, status=status.HTTP_200_OK)
+    
+    def destroy(self, request, *args, **kwargs):
+        if request.user.role != 'admin':
+            return Response({'error': 'Only admin can delete attendance.'}, status=403)
+        return super().destroy(request, *args, **kwargs)
+
+class CurrentUserViewSet(viewsets.GenericViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        serializer = EmployeeListSerializer(request.user.employee)
+        return Response(serializer.data, status=status.HTTP_200_OK)
