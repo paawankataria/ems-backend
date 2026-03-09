@@ -255,8 +255,20 @@ class AttendanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins
     
     def destroy(self, request, *args, **kwargs):
         if request.user.role != 'admin':
-            return Response({'error': 'Only admin can delete attendance.'}, status=403)
-        return super().destroy(request, *args, **kwargs)
+            return Response({'error': 'Only admin can delete attendance.'}, status=status.HTTP_403_FORBIDDEN)
+        
+        attendance = self.get_object()
+        if attendance.leave_request and attendance.status == 'on_leave':
+            with transaction.atomic():
+                balance = LeaveBalance.objects.get(
+                    employee=attendance.employee,
+                    leave_type=attendance.leave_request.leave_type,
+                    year=attendance.date.year
+                )
+                balance.used_days -= 1
+                balance.save()
+        attendance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 class CurrentUserViewSet(viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated]
@@ -279,7 +291,7 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
             for employee in employees
         ])
     
-class LeaveBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+class LeaveBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated]
     def get_serializer_class(self):
         if self.request.user.role == 'admin':
@@ -362,11 +374,16 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
             current_date = leave_request.start_date
             while current_date <= leave_request.end_date:
-                Attendance.objects.update_or_create(
+                attendance, _ = Attendance.objects.get_or_create(
                     employee=leave_request.employee,
                     date=current_date,
-                    defaults={'status': 'on_leave', 'leave_request': leave_request}
                 )
+                attendance.status = 'on_leave'
+                attendance.leave_request = leave_request
+                attendance.clock_in = None
+                attendance.clock_out = None
+                attendance.work_hours = None
+                attendance.save()
                 current_date += timedelta(days=1)
 
         return Response({'message': 'Leave approved.', 'leave_request': LeaveRequestDetailSerializer(leave_request).data})
@@ -391,7 +408,12 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         if instance.status == 'approved':
             with transaction.atomic():
-                Attendance.objects.filter(leave_request=instance).update(status='absent')
+                Attendance.objects.filter(leave_request=instance).update(status='absent',
+                    leave_request=None,
+                    clock_in=None,
+                    clock_out=None,
+                    work_hours=None
+                )
                 balance = LeaveBalance.objects.get(
                     employee=instance.employee,
                     leave_type=instance.leave_type,
