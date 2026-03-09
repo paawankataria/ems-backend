@@ -1,23 +1,29 @@
 import base64
 from django.utils import timezone
+from datetime import timedelta
 from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.shortcuts import get_object_or_404
-from .models import Attendance, Employee, Department
+from .models import Attendance, Employee, Department, LeaveType, LeaveBalance, LeaveRequest
 from .serializers import (
     DepartmentSerializer,
     UserSerializer,
     EmployeeSerializer,
     EmployeeListSerializer,
     UserUpdateSerializer,
-    AttendanceSerializer
+    AttendanceSerializer,
+    LeaveTypeSerializer,
+    LeaveBalanceSerializer,
+    LeaveBalanceAdminSerializer,
+    LeaveRequestSerializer,
+    LeaveRequestDetailSerializer
 )
 from .permissions import IsAdminRole
 
@@ -258,3 +264,139 @@ class CurrentUserViewSet(viewsets.GenericViewSet):
     def list(self, request):
         serializer = EmployeeListSerializer(request.user.employee)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+class LeaveTypeViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+    serializer_class = LeaveTypeSerializer
+    queryset = LeaveType.objects.all()
+
+    def perform_create(self, serializer):
+        leave_type = serializer.save()
+        year = timezone.now().year
+        employees = Employee.objects.all()
+        LeaveBalance.objects.bulk_create([
+            LeaveBalance(employee=employee, leave_type=leave_type, year=year, used_days=0)
+            for employee in employees
+        ])
+    
+class LeaveBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    permission_classes = [IsAuthenticated]
+    def get_serializer_class(self):
+        if self.request.user.role == 'admin':
+            return LeaveBalanceAdminSerializer
+        return LeaveBalanceSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == 'admin':
+            return LeaveBalance.objects.select_related('employee', 'leave_type').all()
+        return LeaveBalance.objects.select_related('employee', 'leave_type').filter(
+            employee=user.employee,
+            year=timezone.now().year
+        )
+    
+    def update(self, request, *args, **kwargs):
+        if request.user.role != 'admin':
+            return Response({'error': 'Only admin can edit leave balances.'}, status=status.HTTP_403_FORBIDDEN)
+        return super().update(request, *args, **kwargs)
+
+class LeaveRequestViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action in ['create', 'update', 'partial_update']:
+            return LeaveRequestSerializer
+        return LeaveRequestDetailSerializer
+    
+    def get_queryset(self):
+        user = self.request.user
+        if user.role in ['admin', 'manager']:
+            return LeaveRequest.objects.select_related('employee', 'leave_type', 'reviewed_by').all()
+        return LeaveRequest.objects.select_related('employee', 'leave_type', 'reviewed_by').filter(employee=user.employee)
+
+    def perform_create(self, serializer):
+        employee = self.request.user.employee
+        leave_type = serializer.validated_data['leave_type']
+        total_days = serializer.validated_data['total_days']
+        year = serializer.validated_data['start_date'].year
+
+        try:
+            balance = LeaveBalance.objects.get(employee=employee, leave_type=leave_type, year=year)
+        except LeaveBalance.DoesNotExist:
+            raise ValidationError({'error': 'No leave balance found for this leave type.'})
+
+        if balance.remaining_days < total_days:
+            raise ValidationError({'error': f'Insufficient balance. {balance.remaining_days} days left.'})
+
+        serializer.save(employee=employee)
+
+    def perform_update(self, serializer):
+        leave_request = self.get_object()
+        if leave_request.status != 'pending':
+            raise ValidationError({'error': 'Only pending requests can be updated.'})
+        serializer.save()
+    
+    @action(detail=True, methods=['POST'])
+    def approve(self, request, pk=None):
+        if request.user.role not in ['admin', 'manager']:
+            return Response({'error': 'Only admin or manager can approve leaves.'}, status=status.HTTP_403_FORBIDDEN)
+    
+        leave_request = self.get_object()
+    
+        if leave_request.status != 'pending':
+            return Response({'error': 'Only pending requests can be approved.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            leave_request.status = 'approved'
+            leave_request.reviewed_by = request.user
+            leave_request.reviewed_at = timezone.now()
+            leave_request.save()
+
+            balance = LeaveBalance.objects.get(
+                employee=leave_request.employee,
+                leave_type=leave_request.leave_type,
+                year=leave_request.start_date.year
+            )
+            balance.used_days += leave_request.total_days
+            balance.save()
+
+            current_date = leave_request.start_date
+            while current_date <= leave_request.end_date:
+                Attendance.objects.update_or_create(
+                    employee=leave_request.employee,
+                    date=current_date,
+                    defaults={'status': 'on_leave', 'leave_request': leave_request}
+                )
+                current_date += timedelta(days=1)
+
+        return Response({'message': 'Leave approved.', 'leave_request': LeaveRequestDetailSerializer(leave_request).data})
+    
+    @action(detail=True, methods=['POST'])
+    def reject(self, request, pk=None):
+        if request.user.role not in ['admin', 'manager']:
+            return Response({'error': 'Only admin or manager can reject leaves.'}, status=status.HTTP_403_FORBIDDEN)
+    
+        leave_request = self.get_object()
+    
+        if leave_request.status != 'pending':
+            return Response({'error': 'Only pending requests can be rejected.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        leave_request.status = 'rejected'
+        leave_request.reviewed_by = request.user
+        leave_request.reviewed_at = timezone.now()
+        leave_request.save()
+
+        return Response({'message': 'Leave rejected.', 'leave_request': LeaveRequestDetailSerializer(leave_request).data})
+
+    def perform_destroy(self, instance):
+        if instance.status == 'approved':
+            with transaction.atomic():
+                Attendance.objects.filter(leave_request=instance).update(status='absent')
+                balance = LeaveBalance.objects.get(
+                    employee=instance.employee,
+                    leave_type=instance.leave_type,
+                    year=instance.start_date.year
+                )
+                balance.used_days -= instance.total_days
+                balance.save()
+        instance.delete()

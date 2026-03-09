@@ -65,7 +65,12 @@ class Attendance(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='present')
     work_hours = models.DurationField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
-
+    leave_request = models.ForeignKey(
+        'LeaveRequest', null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='attendances'
+)
+    
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=['employee', 'date'], name='unique_employee_date')
@@ -74,3 +79,50 @@ class Attendance(models.Model):
 
     def __str__(self):
         return f"{self.employee} ({self.date}) - {self.status}"
+
+class LeaveType(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    total_days = models.PositiveIntegerField()
+    carryover_limit = models.PositiveIntegerField(default=0) 
+
+    def __str__(self):
+        return f"{self.name} ({self.total_days} days)"
+
+
+class LeaveBalance(models.Model):
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='leave_balances')
+    leave_type = models.ForeignKey(LeaveType, on_delete=models.CASCADE, related_name='balances')
+    year = models.PositiveIntegerField()
+    used_days = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = ['employee', 'leave_type', 'year']
+
+    @property
+    def remaining_days(self):
+        return self.leave_type.total_days - self.used_days
+    
+    def __str__(self):
+        return f"{self.employee.user.get_full_name()} - {self.leave_type.name} {self.year} ({self.remaining_days} days left)"
+
+
+class LeaveRequest(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='leave_requests')
+    leave_type = models.ForeignKey(LeaveType, on_delete=models.CASCADE, related_name='requests')
+    start_date = models.DateField()
+    end_date = models.DateField()
+    total_days = models.PositiveIntegerField()
+    reason = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    reviewed_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='reviewed_leaves')
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.employee.user.get_full_name()} - {self.leave_type.name} {self.start_date} to {self.end_date} ({self.status})" 

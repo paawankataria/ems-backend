@@ -1,6 +1,7 @@
 .venv/
 .vs/
-
+.postman/
+postman/
 # Other common Python/Django exclusions
 __pycache__/
 *.py[cod]
