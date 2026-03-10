@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 from django.contrib.auth import get_user_model
-from .models import Employee, Department, Attendance, LeaveType, LeaveBalance, LeaveRequest
+from .models import Employee, Department, Attendance, LeavesType, LeavesBalance, LeavesRequest
 
 User = get_user_model()
 
@@ -41,6 +41,12 @@ class EmployeeListSerializer(serializers.ModelSerializer):
         model = Employee
         fields = '__all__'
 
+class EmployeeMinimalSerializer(serializers.ModelSerializer):
+    full_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    class Meta:
+        model = Employee
+        fields = ['id', 'employee_id', 'full_name']
+
 class AttendanceSerializer(serializers.ModelSerializer):
     employee_name = serializers.CharField(source='employee.user.get_full_name', read_only=True)
     class Meta:
@@ -49,31 +55,33 @@ class AttendanceSerializer(serializers.ModelSerializer):
         read_only_fields = ['status', 'work_hours', 'created_at']
         extra_kwargs = {'employee': {'write_only': True}}
 
-class LeaveTypeSerializer(serializers.ModelSerializer):
+class LeavesTypeSerializer(serializers.ModelSerializer):
     class Meta:
-        model = LeaveType
+        model = LeavesType
         fields = '__all__'
 
-class LeaveBalanceSerializer(serializers.ModelSerializer):
-    leave_type = LeaveTypeSerializer(read_only=True)
+class LeavesBalanceSerializer(serializers.ModelSerializer):
+    # employee_name = serializers.CharField(source='employee.user.get_full_name', read_only=True)
+    leaves_type = LeavesTypeSerializer(read_only=True)
     remaining_days = serializers.IntegerField(read_only=True)
 
     class Meta:
-        model = LeaveBalance
-        fields = ['id', 'leave_type', 'year', 'remaining_days']
+        model = LeavesBalance
+        fields = ['id', 'leaves_type', 'year', 'remaining_days', 'used_days']
 
-class LeaveBalanceAdminSerializer(serializers.ModelSerializer):
-    leave_type = LeaveTypeSerializer(read_only = True)
+class LeavesBalanceAdminSerializer(serializers.ModelSerializer):
+    leaves_type = LeavesTypeSerializer(read_only = True)
     employee = EmployeeListSerializer(read_only=True)
+    # employee_name = serializers.CharField(source='employee.user.get_full_name', read_only=True)
     remaining_days = serializers.IntegerField(read_only=True)
 
     class Meta:
-        model = LeaveBalance
+        model = LeavesBalance
         fields = '__all__'
 
-class LeaveRequestSerializer(serializers.ModelSerializer):
+class LeavesRequestSerializer(serializers.ModelSerializer):
     class Meta:
-        model = LeaveRequest
+        model = LeavesRequest
         fields = ['leave_type', 'start_date', 'end_date', 'reason']
 
     def validate(self, data):
@@ -82,11 +90,16 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         data['total_days'] = (data['end_date'] - data['start_date']).days + 1
         return data
 
-class LeaveRequestDetailSerializer(serializers.ModelSerializer):
-    employee = EmployeeListSerializer(read_only=True)
-    leave_type = LeaveTypeSerializer(read_only=True)
-    reviewed_by = UserMinimalSerializer(read_only=True)
+class ReviewedBySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['first_name', 'last_name', 'role']
+
+class LeavesRequestDetailSerializer(serializers.ModelSerializer):
+    employee = EmployeeMinimalSerializer(read_only=True)
+    leave_type = LeavesTypeSerializer(read_only=True)
+    reviewed_by = ReviewedBySerializer(read_only=True)
 
     class Meta:
-        model = LeaveRequest
+        model = LeavesRequest
         fields = '__all__'

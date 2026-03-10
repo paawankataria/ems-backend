@@ -65,8 +65,8 @@ class Attendance(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='present')
     work_hours = models.DurationField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    leave_request = models.ForeignKey(
-        'LeaveRequest', null=True, blank=True,
+    leaves_request = models.ForeignKey(
+        'LeavesRequest', null=True, blank=True,
         on_delete=models.SET_NULL,
         related_name='attendances'
 )
@@ -80,7 +80,7 @@ class Attendance(models.Model):
     def __str__(self):
         return f"{self.employee} ({self.date}) - {self.status}"
 
-class LeaveType(models.Model):
+class LeavesType(models.Model):
     name = models.CharField(max_length=100, unique=True)
     total_days = models.PositiveIntegerField()
     carryover_limit = models.PositiveIntegerField(default=0) 
@@ -89,24 +89,24 @@ class LeaveType(models.Model):
         return f"{self.name} ({self.total_days} days)"
 
 
-class LeaveBalance(models.Model):
+class LeavesBalance(models.Model):
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='leave_balances')
-    leave_type = models.ForeignKey(LeaveType, on_delete=models.CASCADE, related_name='balances')
+    leaves_type = models.ForeignKey(LeavesType, on_delete=models.CASCADE, related_name='balances')
     year = models.PositiveIntegerField()
     used_days = models.PositiveIntegerField(default=0)
 
     class Meta:
-        unique_together = ['employee', 'leave_type', 'year']
+        unique_together = ['employee', 'leaves_type', 'year']
 
     @property
     def remaining_days(self):
-        return self.leave_type.total_days - self.used_days
+        return self.leaves_type.total_days - self.used_days
     
     def __str__(self):
-        return f"{self.employee.user.get_full_name()} - {self.leave_type.name} {self.year} ({self.remaining_days} days left)"
+        return f"{self.employee.user.get_full_name()} - {self.leaves_type.name} {self.year} ({self.remaining_days} days left)"
 
 
-class LeaveRequest(models.Model):
+class LeavesRequest(models.Model):
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('approved', 'Approved'),
@@ -114,7 +114,7 @@ class LeaveRequest(models.Model):
     ]
 
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='leave_requests')
-    leave_type = models.ForeignKey(LeaveType, on_delete=models.CASCADE, related_name='requests')
+    leave_type = models.ForeignKey(LeavesType, on_delete=models.CASCADE, related_name='requests')
     start_date = models.DateField()
     end_date = models.DateField()
     total_days = models.PositiveIntegerField()
