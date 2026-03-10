@@ -11,7 +11,7 @@ from rest_framework.exceptions import ValidationError
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.shortcuts import get_object_or_404
-from .models import Attendance, Employee, Department, LeavesType, LeavesBalance, LeavesRequest
+from .models import Attendance, Employee, Department, LeavesType, LeavesBalance, LeavesRequest, Payroll
 from .serializers import (
     DepartmentSerializer,
     UserSerializer,
@@ -23,7 +23,8 @@ from .serializers import (
     LeavesBalanceSerializer,
     LeavesBalanceAdminSerializer,
     LeavesRequestSerializer,
-    LeavesRequestDetailSerializer
+    LeavesRequestDetailSerializer,
+    PayrollSerializer
 )
 from .permissions import IsAdminRole
 
@@ -258,7 +259,7 @@ class AttendanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins
             return Response({'error': 'Only admin can delete attendance.'}, status=status.HTTP_403_FORBIDDEN)
         
         attendance = self.get_object()
-        if attendance.leave_request and attendance.status == 'on_leave':
+        if attendance.leaves_request and attendance.status == 'on_leave':
             with transaction.atomic():
                 balance = LeavesBalance.objects.get(
                     employee=attendance.employee,
@@ -368,9 +369,9 @@ class LeavesRequestViewSet(viewsets.ModelViewSet):
             leaves_request.reviewed_at = timezone.now()
             leaves_request.save()
 
-            balance = LeaveBalance.objects.get(
+            balance = LeavesBalance.objects.get(
                 employee=leaves_request.employee,
-                leaves_type=leaves_request.leave_type,
+                leaves_type=leaves_request.leaves_type,
                 year=leaves_request.start_date.year
             )
             balance.used_days += leaves_request.total_days
@@ -390,7 +391,7 @@ class LeavesRequestViewSet(viewsets.ModelViewSet):
                 attendance.save()
                 current_date += timedelta(days=1)
 
-        return Response({'message': 'Leaves approved.', 'leaves_request': LeaveRequestDetailSerializer(leaves_request).data})
+        return Response({'message': 'Leaves approved.', 'leaves_request': LeavesRequestDetailSerializer(leaves_request).data})
     
     @action(detail=True, methods=['POST'])
     def reject(self, request, pk=None):
@@ -407,7 +408,7 @@ class LeavesRequestViewSet(viewsets.ModelViewSet):
         leaves_request.reviewed_at = timezone.now()
         leaves_request.save()
 
-        return Response({'message': 'Leaves rejected.', 'leaves_request': LeaveRequestDetailSerializer(leaves_request).data})
+        return Response({'message': 'Leaves rejected.', 'leaves_request': LeavesRequestDetailSerializer(leaves_request).data})
 
     def perform_destroy(self, instance):
         if instance.status == 'approved':
@@ -426,3 +427,33 @@ class LeavesRequestViewSet(viewsets.ModelViewSet):
                 balance.used_days -= instance.total_days
                 balance.save()
         instance.delete()
+
+class PayrollViewset(viewsets.ModelViewSet):
+    serializer_class = PayrollSerializer
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), IsAdminRole()]
+    
+    def get_queryset(self):
+        user = self.request.user
+        if user.role in ['admin']:
+            return Payroll.objects.select_related('employee').all()
+        return Payroll.objects.select_related('employee').filter(employee=user.employee)
+    
+    def perform_create(self, serializer):
+        employee = serializer.validated_data['employee']
+        deduction = serializer.validated_data.get('salary_deduction', 0)
+        now = timezone.now()
+        serializer.save(
+            base_salary=employee.salary,
+            net_salary=employee.salary - deduction,
+            month=now.month,
+            year=now.year
+        )
+    
+    def perform_update(self, serializer):
+        employee = serializer.validated_data.get('employee', serializer.instance.employee)
+        deduction = serializer.validated_data.get('salary_deduction', serializer.instance.salary_deduction)
+        serializer.save(net_salary=employee.salary - deduction)

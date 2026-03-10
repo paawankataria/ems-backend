@@ -125,4 +125,21 @@ class LeavesRequest(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.employee.user.get_full_name()} - {self.leave_type.name} {self.start_date} to {self.end_date} ({self.status})" 
+        return f"{self.employee.user.get_full_name()} - {self.leaves_type.name} {self.start_date} to {self.end_date} ({self.status})" 
+    
+class Payroll(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('paid', 'Paid')
+    ]
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='payroll')
+    month = models.PositiveIntegerField()
+    year = models.PositiveIntegerField()
+    base_salary = models.DecimalField(max_digits=10, decimal_places=2)
+    salary_deduction = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    net_salary = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
+
+    class Meta:
+        unique_together = ['employee', 'year', 'month']

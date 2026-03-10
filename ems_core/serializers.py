@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 from django.contrib.auth import get_user_model
-from .models import Employee, Department, Attendance, LeavesType, LeavesBalance, LeavesRequest
+from .models import Employee, Department, Attendance, LeavesType, LeavesBalance, LeavesRequest, Payroll
 
 User = get_user_model()
 
@@ -103,3 +103,9 @@ class LeavesRequestDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = LeavesRequest
         fields = '__all__'
+
+class PayrollSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Payroll
+        fields = '__all__'
+        read_only_fields=['base_salary', 'net_salary', 'month', 'year']
