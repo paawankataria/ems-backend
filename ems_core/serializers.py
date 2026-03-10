@@ -82,7 +82,7 @@ class LeavesBalanceAdminSerializer(serializers.ModelSerializer):
 class LeavesRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = LeavesRequest
-        fields = ['leave_type', 'start_date', 'end_date', 'reason']
+        fields = ['leaves_type', 'start_date', 'end_date', 'reason']
 
     def validate(self, data):
         if data['start_date'] > data['end_date']:
@@ -97,7 +97,7 @@ class ReviewedBySerializer(serializers.ModelSerializer):
 
 class LeavesRequestDetailSerializer(serializers.ModelSerializer):
     employee = EmployeeMinimalSerializer(read_only=True)
-    leave_type = LeavesTypeSerializer(read_only=True)
+    leaves_type = LeavesTypeSerializer(read_only=True)
     reviewed_by = ReviewedBySerializer(read_only=True)
 
     class Meta:

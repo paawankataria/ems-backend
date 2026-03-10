@@ -114,7 +114,7 @@ class LeavesRequest(models.Model):
     ]
 
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='leave_requests')
-    leave_type = models.ForeignKey(LeavesType, on_delete=models.CASCADE, related_name='requests')
+    leaves_type = models.ForeignKey(LeavesType, on_delete=models.CASCADE, related_name='requests')
     start_date = models.DateField()
     end_date = models.DateField()
     total_days = models.PositiveIntegerField()
