@@ -43,9 +43,10 @@ class EmployeeListSerializer(serializers.ModelSerializer):
 
 class EmployeeMinimalSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    department = DepartmentSerializer(read_only=True)
     class Meta:
         model = Employee
-        fields = ['id', 'employee_id', 'full_name']
+        fields = ['id', 'employee_id', 'full_name', 'department']
 
 class AttendanceSerializer(serializers.ModelSerializer):
     employee_name = serializers.CharField(source='employee.user.get_full_name', read_only=True)
@@ -105,6 +106,7 @@ class LeavesRequestDetailSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class PayrollSerializer(serializers.ModelSerializer):
+    employee = EmployeeMinimalSerializer(read_only=True)
     class Meta:
         model = Payroll
         fields = '__all__'

@@ -4,6 +4,7 @@ from datetime import timedelta
 from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.http import FileResponse
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth.password_validation import validate_password
@@ -27,6 +28,7 @@ from .serializers import (
     PayrollSerializer
 )
 from .permissions import IsAdminRole
+from .utils.payslip_pdf import generate_payslip_pdf
 
 User = get_user_model()
 
@@ -215,8 +217,8 @@ class AttendanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins
     def get_queryset(self):
         user = self.request.user
         if user.role == 'admin':
-            return Attendance.objects.all()
-        return Attendance.objects.filter(employee=user.employee)
+            return Attendance.objects.all().order_by('-created_at')
+        return Attendance.objects.filter(employee=user.employee).order_by('-created_at')
     
     @action(detail=False, methods=['POST'])
     def clock_in(self, request):
@@ -328,8 +330,8 @@ class LeavesRequestViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.role in ['admin', 'manager']:
-            return LeavesRequest.objects.select_related('employee', 'leaves_type', 'reviewed_by').all()
-        return LeavesRequest.objects.select_related('employee', 'leaves_type', 'reviewed_by').filter(employee=user.employee)
+            return LeavesRequest.objects.select_related('employee', 'leaves_type', 'reviewed_by').all().order_by('-created_at')
+        return LeavesRequest.objects.select_related('employee', 'leaves_type', 'reviewed_by').filter(employee=user.employee).order_by('-created_at')
 
     def perform_create(self, serializer):
         employee = self.request.user.employee
@@ -439,14 +441,15 @@ class PayrollViewset(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.role in ['admin']:
-            return Payroll.objects.select_related('employee').all()
-        return Payroll.objects.select_related('employee').filter(employee=user.employee)
+            return Payroll.objects.select_related('employee__user', 'employee__department').all().order_by('-year', '-month')
+        return Payroll.objects.select_related('employee__user', 'employee__department').filter(employee=user.employee).order_by('-year', '-month')
     
     def perform_create(self, serializer):
-        employee = serializer.validated_data['employee']
+        employee = Employee.objects.get(id=self.request.data['employee']['id'])
         deduction = serializer.validated_data.get('salary_deduction', 0)
         now = timezone.now()
         serializer.save(
+            employee=employee,
             base_salary=employee.salary,
             net_salary=employee.salary - deduction,
             month=now.month,
@@ -457,3 +460,9 @@ class PayrollViewset(viewsets.ModelViewSet):
         employee = serializer.validated_data.get('employee', serializer.instance.employee)
         deduction = serializer.validated_data.get('salary_deduction', serializer.instance.salary_deduction)
         serializer.save(net_salary=employee.salary - deduction)
+
+    @action(detail=True, methods=['get'], url_path='payslip')
+    def payslip(self, request, pk=None):
+        payroll = self.get_object()  # handles 404 + permissions automatically
+        buffer = generate_payslip_pdf(payroll)
+        return FileResponse(buffer, as_attachment=True, filename=f"payslip_{payroll.month}_{payroll.year}.pdf")
