@@ -18,9 +18,15 @@ class User(AbstractUser):
         return f"{self.username} ({self.role})"
 
 class Department(models.Model):
-    name        = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=100, unique=True)
+    department_head = models.OneToOneField(
+        "Employee", on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="manage_department",
+        limit_choices_to={'user__role': 'manager'}
+    )
     description = models.TextField(blank=True)
-    created_at  = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return self.name
@@ -83,10 +89,15 @@ class Attendance(models.Model):
 class LeavesType(models.Model):
     name = models.CharField(max_length=100, unique=True)
     total_days = models.PositiveIntegerField()
-    carryover_limit = models.PositiveIntegerField(default=0) 
+    carryover_limit = models.PositiveIntegerField(default=0)
+    department = models.ForeignKey(
+        'Department', null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="leaves_types"
+    )
 
     def __str__(self):
-        return f"{self.name} ({self.total_days} days)"
+        return f"{self.name} {self.department} ({self.total_days} days)"
 
 
 class LeavesBalance(models.Model):

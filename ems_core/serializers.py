@@ -6,6 +6,7 @@ from .models import Employee, Department, Attendance, LeavesType, LeavesBalance,
 User = get_user_model()
 
 class DepartmentSerializer(serializers.ModelSerializer):
+    department_head_name = serializers.CharField(source='department_head.user.get_full_name', read_only=True)
     class Meta:
         model  = Department
         fields = '__all__'
@@ -57,6 +58,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
         extra_kwargs = {'employee': {'write_only': True}}
 
 class LeavesTypeSerializer(serializers.ModelSerializer):
+    department_name = serializers.CharField(source='department.name', read_only=True)
     class Meta:
         model = LeavesType
         fields = '__all__'

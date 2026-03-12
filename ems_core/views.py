@@ -27,7 +27,7 @@ from .serializers import (
     LeavesRequestDetailSerializer,
     PayrollSerializer
 )
-from .permissions import IsAdminRole
+from .permissions import IsAdminRole, IsAdminOrManagerRole
 from .utils.payslip_pdf import generate_payslip_pdf
 
 User = get_user_model()
@@ -70,15 +70,39 @@ class AuthViewSet(viewsets.ViewSet):
 # Departments
 class DepartmentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                        mixins.DestroyModelMixin, viewsets.GenericViewSet):
-    permission_classes = [IsAuthenticated, IsAdminRole]
     serializer_class = DepartmentSerializer
-    queryset = Department.objects.all().order_by('name')
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            return [IsAuthenticated(), IsAdminOrManagerRole()]
+        return [IsAuthenticated(), IsAdminRole()]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == 'manager':
+            return Department.objects.filter(pk=user.employee.manage_department.pk)
+        return Department.objects.all().order_by('name')
 
     # GET /api/departments/
-    # def list(self, request):
-    #     departments = Department.objects.all().order_by('name')
-    #     serializer  = DepartmentSerializer(departments, many=True)
-    #     return Response(serializer.data)
+
+    def _validate_department_head(self, employee_id, department_pk=None):
+        employee = Employee.objects.select_related('user', 'manage_department').filter(pk=employee_id).first()
+
+        if not employee:
+            return Response({'error': 'Employee not found.'}, status=status.HTTP_404_NOT_FOUND)
+        
+        if employee.user.role != 'manager':
+            return Response({'error': 'Department head must have a manager role.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check if manager is already head of a DIFFERENT department
+        if hasattr(employee, 'manage_department'):
+            already_managing = employee.manage_department
+            if department_pk is None or already_managing.pk != int(department_pk):
+                return Response(
+                    {'error': f'This manager is already head of "{already_managing.name}" department.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        return None
 
     # POST /api/departments/
     def create(self, request):
@@ -87,14 +111,17 @@ class DepartmentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             return Response({'error': 'Name is required'}, status=status.HTTP_400_BAD_REQUEST)
         err = check_unique(Department, 'name__iexact', name, error_msg='Department already exists.')
         if err: return err
+
+        department_head_id = request.data.get('department_head')
+        if department_head_id:
+            head_err = self._validate_department_head(department_head_id)
+            if head_err: return head_err
         serializer = DepartmentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response({'message': 'Department created successfully.', 'department': serializer.data}, status=status.HTTP_201_CREATED)
 
     # GET /api/departments/{id}/
-    # def retrieve(self, request, pk=None):
-    #     return Response(DepartmentSerializer(get_object_or_404(Department, pk=pk)).data)
 
     # PUT /api/departments/{id}
     def update(self, request, pk=None):
@@ -103,6 +130,12 @@ class DepartmentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         if name:
             err = check_unique(Department, 'name__iexact', name, exclude_pk=pk, error_msg='Department already exists.')
             if err: return err
+        
+        department_head_id = request.data.get('department_head')
+        if department_head_id:
+            head_err = self._validate_department_head(department_head_id, department_pk=pk)
+            if head_err: return head_err
+        
         serializer = DepartmentSerializer(department, data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -111,16 +144,20 @@ class DepartmentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         }, status=status.HTTP_200_OK)
     
     # DELETE /api/departments/{id}/
-    # def destroy(self, request, pk=None):
-    #     get_object_or_404(Department, pk=pk).delete()
-    #     return Response(status=status.HTTP_204_NO_CONTENT)
     
 # Employees
 class EmployeesViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
-    permission_classes = [IsAuthenticated, IsAdminRole]
     serializer_class = EmployeeListSerializer
 
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            return [IsAuthenticated(), IsAdminOrManagerRole()]
+        return [IsAuthenticated(), IsAdminRole()]
+
     def get_queryset(self):
+        user = self.request.user
+        if user.role == 'manager':
+            return Employee.objects.filter(department=user.employee.manage_department).order_by('-user__created_at')
         return Employee.objects.select_related('user', 'department').order_by('-user__created_at')
     
     # GET /api/employees/list/
@@ -292,11 +329,29 @@ class LeavesTypeViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         leaves_type = serializer.save()
         year = timezone.now().year
-        employees = Employee.objects.all()
+        employees = Employee.objects.filter(department=leaves_type.department) if leaves_type.department else Employee.objects.all()
         LeavesBalance.objects.bulk_create([
             LeavesBalance(employee=employee, leaves_type=leaves_type, year=year, used_days=0)
             for employee in employees
         ])
+
+    def perform_update(self, serializer):
+        old_department = serializer.instance.department
+        leaves_type = serializer.save()
+        new_department = leaves_type.department
+
+        if old_department != new_department:
+            year = timezone.now().year
+            LeavesBalance.objects.filter(leaves_type=leaves_type, year=year).exclude(
+                employee__department=new_department
+            ).delete()
+
+            existing = LeavesBalance.objects.filter(leaves_type=leaves_type, year=year).values_list('employee_id', flat=True)
+            new_employees = Employee.objects.filter(department=new_department).exclude(id__in=existing)
+            LeavesBalance.objects.bulk_create([
+                LeavesBalance(employee=employee, leaves_type=leaves_type, year=year, used_days=0)
+                for employee in new_employees
+            ])
     
 class LeavesBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated]
