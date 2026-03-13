@@ -58,6 +58,7 @@ class Attendance(models.Model):
         ('on_leave', 'On Leave'),
         ('half_day', 'Half Day'),
         ('work_from_home', 'Work From Home'),
+        ('wfh_pending', 'WFH Pending'),
     ]
 
     employee = models.ForeignKey(

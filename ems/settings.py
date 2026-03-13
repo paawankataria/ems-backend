@@ -42,7 +42,8 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     "corsheaders",
     # 'rest_framework_simplejwt.token_blacklist',
-    'ems_core'
+    'ems_core',
+    'background_task',
 ]
 
 MIDDLEWARE = [
@@ -129,7 +130,7 @@ AUTH_USER_MODEL = 'ems_core.User'
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Kolkata'
 
 USE_I18N = True
 

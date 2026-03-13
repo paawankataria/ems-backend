@@ -57,6 +57,9 @@ class AttendanceSerializer(serializers.ModelSerializer):
         read_only_fields = ['status', 'work_hours', 'created_at']
         extra_kwargs = {'employee': {'write_only': True}}
 
+class WFHRequestSerializer(serializers.Serializer):
+    date = serializers.DateField()
+
 class LeavesTypeSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(source='department.name', read_only=True)
     class Meta:

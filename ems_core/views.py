@@ -20,6 +20,7 @@ from .serializers import (
     EmployeeListSerializer,
     UserUpdateSerializer,
     AttendanceSerializer,
+    WFHRequestSerializer,
     LeavesTypeSerializer,
     LeavesBalanceSerializer,
     LeavesBalanceAdminSerializer,
@@ -29,6 +30,8 @@ from .serializers import (
 )
 from .permissions import IsAdminRole, IsAdminOrManagerRole
 from .utils.payslip_pdf import generate_payslip_pdf
+from datetime import date
+from .utils.task import mark_absent_for_date
 
 User = get_user_model()
 
@@ -38,6 +41,14 @@ def check_unique(model, field, value, exclude_pk=None, error_msg=''):
         qs = qs.exclude(pk=exclude_pk)
     if qs.exists():
         return Response({'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def get_working_days(start_date, end_date):
+    current_date = start_date
+    while current_date <= end_date:
+        if current_date.weekday() < 5:
+            yield current_date
+        current_date += timedelta(days=1)
 
 # Auth
 class AuthViewSet(viewsets.ViewSet):
@@ -93,7 +104,6 @@ class DepartmentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         if employee.user.role != 'manager':
             return Response({'error': 'Department head must have a manager role.'}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Check if manager is already head of a DIFFERENT department
         if hasattr(employee, 'manage_department'):
             already_managing = employee.manage_department
             if department_pk is None or already_managing.pk != int(department_pk):
@@ -254,44 +264,82 @@ class AttendanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins
     def get_queryset(self):
         user = self.request.user
         if user.role == 'admin':
-            return Attendance.objects.all().order_by('-created_at')
-        return Attendance.objects.filter(employee=user.employee).order_by('-created_at')
+            queryset = Attendance.objects.all().order_by('-date')
+        else:
+            queryset = Attendance.objects.filter(employee=user.employee).order_by('-date')
+        date_param = self.request.query_params.get('date')
+        if date_param:
+            try:
+                parsed_date = date.fromisoformat(date_param)
+            except ValueError:
+                return queryset.none()
+
+            if parsed_date <= timezone.localdate():
+                mark_absent_for_date(parsed_date.isoformat())
+
+                queryset = queryset.filter(date=parsed_date)
+        return queryset
     
     @action(detail=False, methods=['POST'])
     def clock_in(self, request):
         employee = request.user.employee
         today = timezone.localdate()
-        
+
+        if today.weekday() >= 5:
+            return Response({'detail': 'Cannot clock in on weekends.'}, status=status.HTTP_400_BAD_REQUEST)
+    
         if Attendance.objects.filter(employee=employee, date=today, clock_in__isnull=False).exists():
-            return Response({'detail': 'Already clocked in today'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Already clocked in today'}, status=status.HTTP_400_BAD_REQUEST)
         
-        attendance = Attendance.objects.create(employee=employee, date=today, clock_in=timezone.now())
+        attendance = Attendance.objects.filter(employee=employee, date=today, status='work_from_home').first()
+        if attendance:
+            attendance.clock_in = timezone.now()
+        else:
+            attendance = Attendance.objects.create(employee=employee, date=today, clock_in=timezone.now())
         serializer = self.get_serializer(attendance)
-        return Response({'detail': 'Clocked in successfully', 'attendance': serializer.data}, status=status.HTTP_200_OK)
+        return Response({'error': 'Clocked in successfully', 'attendance': serializer.data}, status=status.HTTP_200_OK)
     
     @action(detail=False, methods=['POST'])
     def clock_out(self, request):
         employee = request.user.employee
         today = timezone.localdate()
         
+        if today.weekday() >= 5:
+            return Response({'detail': 'Cannot clock out on weekends.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        status_value = request.data.get('status', 'present')
+        if status_value not in ['present', 'work_from_home']:
+            return Response({'detail': 'Invalid status. Allowed: present, work_from_home'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if status_value == 'work_from_home':
+            if not Attendance.objects.filter(employee=employee, date=today, status='work_from_home').exists():
+                return Response({'detail': 'No approved WFH request found for today.'}, status=status.HTTP_400_BAD_REQUEST)
+    
         try:
             attendance = Attendance.objects.get(employee=employee, date=today)
         except Attendance.DoesNotExist:
-            return Response({"message": 'You have not clocked in'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": 'You have not clocked in'}, status=status.HTTP_400_BAD_REQUEST)
 
         if attendance.clock_out:
-            return Response({'message': 'Already clocked out today'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Already clocked out today'}, status=status.HTTP_400_BAD_REQUEST)
         
-        attendance.clock_out = timezone.now()
-        attendance.work_hours = attendance.clock_out - attendance.clock_in
-        status_value = request.data.get('status', 'present')
-        if status_value not in ['present', 'half_day', 'work_from_home']:
-            return Response({'error': 'Invalid status.'}, status=status.HTTP_400_BAD_REQUEST)
+        clock_out_time = timezone.now()
+        local_clock_in = timezone.localtime(attendance.clock_in)
+        local_clock_out = timezone.localtime(clock_out_time)
 
+        # auto half day detection
+        clocked_in_late = (local_clock_in.hour, local_clock_in.minute) >= (10, 30)  # after 10:30 AM
+        clocked_out_early = local_clock_out.hour < 14  # before 2 PM
+
+        if clocked_in_late or clocked_out_early:
+            status_value = 'half_day'
+
+        attendance.clock_out = clock_out_time
+        attendance.work_hours = clock_out_time - attendance.clock_in
         attendance.status = status_value
         attendance.save()
         serializer = self.get_serializer(attendance)
-        return Response({'message': 'Clocked out successfully', 'attendance': serializer.data}, status=status.HTTP_200_OK)
+        return Response({'detail': 'Clocked out successfully', 'attendance': serializer.data}, status=status.HTTP_200_OK)
     
     def destroy(self, request, *args, **kwargs):
         if request.user.role != 'admin':
@@ -307,6 +355,75 @@ class AttendanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins
                 )
                 balance.used_days -= 1
                 balance.save()
+        attendance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    
+class WFHRequestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = AttendanceSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role in ['admin', 'manager']:
+            return Attendance.objects.filter(status__in=['wfh_pending', 'work_from_home']).order_by('-date')
+        return Attendance.objects.filter(employee=user.employee, status__in=['wfh_pending', 'work_from_home']).order_by('-date')
+
+    def create(self, request):
+        serializer = WFHRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        date = serializer.validated_data['date']
+        employee = request.user.employee
+        date = request.data.get('date')
+        today = timezone.localdate()
+
+        # if date <= today:
+        #     return Response({'detail': 'WFH must be requested at least a day in advance.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if date.weekday() >= 5:
+            return Response({'detail': 'Cannot request WFH on weekends.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if Attendance.objects.filter(employee=employee, date=date).exists():
+            return Response({'detail': 'Attendance record already exists for this date.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        attendance = Attendance.objects.create(employee=employee, date=date, status='wfh_pending')
+        serializer = self.get_serializer(attendance)
+        return Response({'detail': 'WFH request submitted.', 'attendance': serializer.data}, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['POST'])
+    def approve(self, request, pk=None):
+        if request.user.role not in ['admin', 'manager']:
+            return Response({'detail': 'Only admin or manager can approve WFH requests.'}, status=status.HTTP_403_FORBIDDEN)
+
+        attendance = self.get_object()
+
+        if attendance.status != 'wfh_pending':
+            return Response({'detail': 'Only pending WFH requests can be approved.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        attendance.status = 'work_from_home'
+        attendance.save()
+
+        serializer = self.get_serializer(attendance)
+        return Response({'detail': 'WFH request approved.', 'attendance': serializer.data})
+
+    @action(detail=True, methods=['POST'])
+    def reject(self, request, pk=None):
+        if request.user.role not in ['admin', 'manager']:
+            return Response({'detail': 'Only admin or manager can reject WFH requests.'}, status=status.HTTP_403_FORBIDDEN)
+
+        attendance = self.get_object()
+
+        if attendance.status != 'wfh_pending':
+            return Response({'detail': 'Only pending WFH requests can be rejected.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        attendance.delete()
+        return Response({'detail': 'WFH request rejected.'}, status=status.HTTP_200_OK)
+
+    def destroy(self, request, *args, **kwargs):
+        attendance = self.get_object()
+        if attendance.status == 'work_from_home':
+            return Response({'detail': 'Cannot delete an approved WFH request.'}, status=status.HTTP_400_BAD_REQUEST)
+        if attendance.employee != request.user.employee and request.user.role not in ['admin', 'manager']:
+            return Response({'detail': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
         attendance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -371,7 +488,7 @@ class LeavesBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mix
     
     def update(self, request, *args, **kwargs):
         if request.user.role != 'admin':
-            return Response({'error': 'Only admin can edit leave balances.'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'detail': 'Only admin can edit leave balances.'}, status=status.HTTP_403_FORBIDDEN)
         return super().update(request, *args, **kwargs)
 
 class LeavesRequestViewSet(viewsets.ModelViewSet):
@@ -397,28 +514,28 @@ class LeavesRequestViewSet(viewsets.ModelViewSet):
         try:
             balance = LeavesBalance.objects.get(employee=employee, leaves_type=leaves_type, year=year)
         except LeavesBalance.DoesNotExist:
-            raise ValidationError({'error': 'No leaves balance found for this leave type.'})
+            raise ValidationError({'detail': 'No leaves balance found for this leave type.'})
 
         if balance.remaining_days < total_days:
-            raise ValidationError({'error': f'Insufficient balance. {balance.remaining_days} days left.'})
+            raise ValidationError({'detail': f'Insufficient balance. {balance.remaining_days} days left.'})
 
         serializer.save(employee=employee)
 
     def perform_update(self, serializer):
         leaves_request = self.get_object()
         if leaves_request.status != 'pending':
-            raise ValidationError({'error': 'Only pending requests can be updated.'})
+            raise ValidationError({'detail': 'Only pending requests can be updated.'})
         serializer.save()
     
     @action(detail=True, methods=['POST'])
     def approve(self, request, pk=None):
         if request.user.role not in ['admin', 'manager']:
-            return Response({'error': 'Only admin or manager can approve leaves.'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'detail': 'Only admin or manager can approve leaves.'}, status=status.HTTP_403_FORBIDDEN)
     
         leaves_request = self.get_object()
     
         if leaves_request.status != 'pending':
-            return Response({'error': 'Only pending requests can be approved.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Only pending requests can be approved.'}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
             leaves_request.status = 'approved'
@@ -435,7 +552,7 @@ class LeavesRequestViewSet(viewsets.ModelViewSet):
             balance.save()
 
             current_date = leaves_request.start_date
-            while current_date <= leaves_request.end_date:
+            for current_date in get_working_days(leaves_request.start_date, leaves_request.end_date):
                 attendance, _ = Attendance.objects.get_or_create(
                     employee=leaves_request.employee,
                     date=current_date,
@@ -448,29 +565,32 @@ class LeavesRequestViewSet(viewsets.ModelViewSet):
                 attendance.save()
                 current_date += timedelta(days=1)
 
-        return Response({'message': 'Leaves approved.', 'leaves_request': LeavesRequestDetailSerializer(leaves_request).data})
+        return Response({'detail': 'Leaves approved.', 'leaves_request': LeavesRequestDetailSerializer(leaves_request).data})
     
     @action(detail=True, methods=['POST'])
     def reject(self, request, pk=None):
         if request.user.role not in ['admin', 'manager']:
-            return Response({'error': 'Only admin or manager can reject leaves.'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'detail': 'Only admin or manager can reject leaves.'}, status=status.HTTP_403_FORBIDDEN)
     
         leaves_request = self.get_object()
     
         if leaves_request.status != 'pending':
-            return Response({'error': 'Only pending requests can be rejected.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Only pending requests can be rejected.'}, status=status.HTTP_400_BAD_REQUEST)
 
         leaves_request.status = 'rejected'
         leaves_request.reviewed_by = request.user
         leaves_request.reviewed_at = timezone.now()
         leaves_request.save()
 
-        return Response({'message': 'Leaves rejected.', 'leaves_request': LeavesRequestDetailSerializer(leaves_request).data})
+        return Response({'detail': 'Leaves rejected.', 'leaves_request': LeavesRequestDetailSerializer(leaves_request).data})
 
     def perform_destroy(self, instance):
+        if self.request.user.role not in ['admin', 'manager']:
+            raise ValidationError({'detail': 'Only admin or manager can delete leave requests.'})
         if instance.status == 'approved':
             with transaction.atomic():
-                Attendance.objects.filter(leaves_request=instance).update(status='absent',
+                Attendance.objects.filter(leaves_request=instance).update(
+                    status='absent',
                     leaves_request=None,
                     clock_in=None,
                     clock_out=None,
